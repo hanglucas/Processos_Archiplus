@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 const code=await readFile(new URL('../supabase/functions/consult-process/index.ts',import.meta.url),'utf8');
-const {createHandler,officialURL,parseSEI,parseSmuResult,parseLegacyHTTP,legacyPortalFetch}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+const {createHandler,officialURL,parseSEI,parseSmuResult,parseLegacyHTTP,legacyPortalFetch,completeRaster}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
 const W='10000000-0000-0000-0000-000000000001',U='20000000-0000-0000-0000-000000000001';
 const env={get:n=>({SUPABASE_URL:'https://db.example',SUPABASE_ANON_KEY:'public-test',SUPABASE_SERVICE_ROLE_KEY:'private-test-only'})[n]};
 const p={id:'p1',title:'Fixture',number:'000230.000001/2026-00',source:'sei',group:'Grupo',lifecycle:'active',url:'https://prefeitura.sei.rio/sei/modulos/pesquisa/md_pesq_processo_exibir.php?fixture'};
@@ -76,5 +76,15 @@ test('TLS sem close_notify só é aceito com resposta HTTP completa',async()=>{
   response='HTTP/1.1 200 OK\r\n\r\nunframed';
   await assert.rejects(()=>legacyPortalFetch('https://consultasmu.rio.gov.br/test'));
  }finally{if(previous===undefined)delete globalThis.Deno;else globalThis.Deno=previous;}
+});
+
+
+test('Imagem CAPTCHA tem término estrutural completo; prefixos truncados são recusados',()=>{
+ const gif=Uint8Array.from(Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==','base64'));
+ assert.equal(completeRaster(gif,'image/gif'),true);
+ for(let n=1;n<gif.length;n++)assert.equal(completeRaster(gif.slice(0,n),'image/gif'),false);
+ const jpeg=new Uint8Array([255,216,255,192,0,11,8,0,1,0,1,1,1,17,0,255,218,0,8,1,1,0,0,63,0,33,44,255,0,55,255,217]);
+ assert.equal(completeRaster(jpeg,'image/jpeg'),true);
+ for(let n=1;n<jpeg.length;n++)assert.equal(completeRaster(jpeg.slice(0,n),'image/jpeg'),false);
 });
 

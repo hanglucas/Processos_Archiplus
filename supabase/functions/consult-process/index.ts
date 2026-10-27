@@ -1,3 +1,36 @@
+export function completeRaster(bytes,type){
+ const n=bytes.length;
+ if(type==='image/png'){
+  if(n<20||[137,80,78,71,13,10,26,10].some((b,i)=>bytes[i]!==b))return false;
+  let pos=8;while(pos+12<=n){const size=new DataView(bytes.buffer,bytes.byteOffset+pos,4).getUint32(0),kind=String.fromCharCode(...bytes.slice(pos+4,pos+8));if(size>n-pos-12)return false;if(kind==='IEND')return size===0&&pos+12===n;pos+=size+12;}return false;
+ }
+ if(type==='image/gif'){
+  if(n<14||!['GIF87a','GIF89a'].includes(new TextDecoder().decode(bytes.slice(0,6))))return false;
+  let pos=13;if(bytes[10]&128)pos+=3*(1<<((bytes[10]&7)+1));
+  const blocks=()=>{while(pos<n){const size=bytes[pos++];if(!size)return true;if(pos+size>n)return false;pos+=size;}return false;};
+  let image=false;
+  while(pos<n){const kind=bytes[pos++];if(kind===59)return image&&pos===n;if(kind===33){if(pos>=n)return false;pos++;if(!blocks())return false;}else if(kind===44){if(pos+9>n)return false;const flags=bytes[pos+8];pos+=9;if(flags&128)pos+=3*(1<<((flags&7)+1));if(pos>=n)return false;pos++;if(!blocks())return false;image=true;}else return false;}return false;
+ }
+ if(type==='image/jpeg'||type==='image/jpg'){
+  if(n<4||bytes[0]!==255||bytes[1]!==216)return false;
+  let pos=2,scan=false,seenScan=false,frame=false;
+  while(pos<n){
+   let marker;
+   if(scan){let found=false;while(pos<n){if(bytes[pos++]!==255)continue;while(pos<n&&bytes[pos]===255)pos++;if(pos>=n)return false;marker=bytes[pos++];if(marker===0||marker>=208&&marker<=215)continue;found=true;break;}if(!found)return false;scan=false;}
+   else{if(bytes[pos++]!==255)return false;while(pos<n&&bytes[pos]===255)pos++;if(pos>=n)return false;marker=bytes[pos++];}
+   if(marker===217)return frame&&seenScan&&pos===n;
+   if(marker===216||marker===0)return false;
+   if(marker===1||marker>=208&&marker<=215)continue;
+   if(pos+2>n)return false;const size=bytes[pos]*256+bytes[pos+1];if(size<2||pos+size>n)return false;
+   if([192,193,194,195,197,198,199,201,202,203,205,206,207].includes(marker))frame=true;
+   if(marker===218){scan=true;seenScan=true;}pos+=size;
+  }return false;
+ }
+ if(type==='image/bmp')return n>=54&&bytes[0]===66&&bytes[1]===77&&new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getUint32(2,true)===n;
+ return false;
+}
+
+
 export function parseLegacyHTTP(bytes){
  const marker=new Uint8Array([13,10,13,10]);let split=-1;
  outer:for(let i=0;i<Math.min(bytes.length-3,65536);i++){for(let j=0;j<4;j++)if(bytes[i+j]!==marker[j])continue outer;split=i;break;}
@@ -26,7 +59,7 @@ export function parseLegacyHTTP(bytes){
 export async function legacyPortalFetch(url,options={}){
  if(new URL(url).hostname!=='consultasmu.rio.gov.br')return fetch(url,options);
  const target=new URL(officialURL(url,'smu')),body=typeof options.body==='string'?options.body:'';
- const headers={'Host':target.hostname,'User-Agent':'Mozilla/5.0 ProcessosArchiplus/1.0','Accept':'text/html,image/*;q=0.9,*/*;q=0.8',...options.headers,'Accept-Encoding':'identity','Connection':'close',...(body?{'Content-Length':String(new TextEncoder().encode(body).length)}:{})};
+ const headers={'Host':target.hostname,'User-Agent':'Mozilla/5.0 ProcessosArchiplus/1.0','Accept':'text/html,image/*;q=0.9,*/*;q=0.8',...options.headers,'Accept-Encoding':'identity','Connection':'keep-alive',...(body?{'Content-Length':String(new TextEncoder().encode(body).length)}:{})};
  for(const value of Object.values(headers))if(/[\r\n]/.test(String(value)))throw new RequestError('Cabeçalho de consulta inválido.');
  const request=(options.method||'GET')+' '+target.pathname+target.search+' HTTP/1.1\r\n'+Object.entries(headers).map(([k,v])=>k+': '+v).join('\r\n')+'\r\n\r\n'+body;
  let connection,expired=false;const stop=()=>{expired=true;try{connection?.close();}catch{}};
@@ -37,12 +70,18 @@ export async function legacyPortalFetch(url,options={}){
   if(expired){connection.close();throw new RequestError('A SMU demorou a responder.');}
   const out=new TextEncoder().encode(request);let sent=0;while(sent<out.length)sent+=await connection.write(out.subarray(sent));
   const parts=[];let total=0,closeError=null;
-  for(;;){const buffer=new Uint8Array(32768);let n;try{n=await connection.read(buffer);}catch(error){closeError=error;break;}if(n===null)break;total+=n;if(total>3100000)throw new RequestError('Resposta da SMU grande demais.');parts.push(buffer.slice(0,n));}
+  for(;;){const buffer=new Uint8Array(32768);let n;try{n=await connection.read(buffer);}catch(error){closeError=error;break;}if(n===null)break;total+=n;if(total>3100000)throw new RequestError('Resposta da SMU grande demais.');parts.push(buffer.slice(0,n));
+   // Stop at the authenticated HTTP message boundary; old IIS servers may omit
+   // close_notify after the already complete response.
+   const probe=new Uint8Array(total);let at=0;for(const part of parts){probe.set(part,at);at+=part.length;}
+   try{if(parseLegacyHTTP(probe).framed)break;}catch{}
+  }
   const all=new Uint8Array(total);let offset=0;for(const part of parts){all.set(part,offset);offset+=part.length;}
+  if(closeError){const head=new TextDecoder('windows-1252').decode(all.slice(0,65536)),boundary=head.indexOf('\r\n\r\n');console.info('SMU transport summary',JSON.stringify({status:head.match(/^HTTP\/[^ ]+ ([0-9]+)/)?.[1],contentLength:head.match(/\r\ncontent-length:\s*([^\r\n]+)/i)?.[1]||null,transferEncoding:head.match(/\r\ntransfer-encoding:\s*([^\r\n]+)/i)?.[1]||null,contentType:head.match(/\r\ncontent-type:\s*([^\r\n]+)/i)?.[1]||null,bodyBytes:boundary>=0?all.length-boundary-4:all.length,htmlEnd:head.toLowerCase().includes('</html>')}));}
   const raw=parseLegacyHTTP(all);
   // A missing TLS close_notify is tolerated only after a fully framed HTTP
-  // response. Certificate validation remains enabled; partial bodies fail closed.
-  if(closeError&&(!String(closeError.message).includes('without sending TLS close_notify')||(!raw.framed&&!(raw.status>=300&&raw.status<400))))throw new RequestError('A SMU encerrou a resposta antes de concluí-la. Tente novamente.');
+  // response or structurally complete raster. Certificate validation stays enabled.
+  if(closeError&&(!String(closeError.message).includes('without sending TLS close_notify')||(!raw.framed&&!completeRaster(raw.bytes,raw.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase())&&!(raw.status>=300&&raw.status<400))))throw new RequestError('A SMU encerrou a resposta antes de concluí-la. Tente novamente.');
   let bytes=raw.bytes;
   const encoding=raw.headers.get('content-encoding')?.toLowerCase();
   if(encoding==='gzip'||encoding==='deflate'){bytes=await readBytes(new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream(encoding))));raw.headers.delete('content-encoding');raw.headers.delete('content-length');}
@@ -207,7 +246,7 @@ export function createHandler(env,transport=fetch,portalTransport=transport){
     if(!src)throw new RequestError('A SMU não exibiu a imagem de validação.');
     const imageURL=new URL(src,smuURL);imageURL.searchParams.set('_archiplus',crypto.randomUUID());
     const imageResponse=await external(imageURL.href,'smu',{},jar),type=imageResponse.headers.get('content-type')?.split(';')[0]||'';
-    if(!['image/png','image/jpeg','image/gif','image/bmp'].includes(type))throw new RequestError('A imagem de validação não foi carregada.');
+    if(!['image/png','image/jpeg','image/jpg','image/gif','image/bmp'].includes(type))throw new RequestError('A imagem de validação não foi carregada.');
     const bytes=await readBytes(imageResponse,300000),hash=b64(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)));
     const token=crypto.randomUUID(),expires=new Date(Date.now()+5*60000).toISOString();
     const payload=await seal({cookies:[...jar],hidden,fingerprint:fingerprint(p)},service);
