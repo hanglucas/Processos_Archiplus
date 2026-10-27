@@ -1,3 +1,56 @@
+export function parseLegacyHTTP(bytes){
+ const marker=new Uint8Array([13,10,13,10]);let split=-1;
+ outer:for(let i=0;i<Math.min(bytes.length-3,65536);i++){for(let j=0;j<4;j++)if(bytes[i+j]!==marker[j])continue outer;split=i;break;}
+ if(split<0)throw new RequestError('A SMU retornou cabeçalhos incompletos.');
+ const lines=new TextDecoder('windows-1252').decode(bytes.slice(0,split)).split('\r\n'),status=Number(lines.shift().match(/^HTTP\/1\.[01]\s+(\d{3})/)?.[1]);
+ if(!status)throw new RequestError('Resposta HTTP inválida da SMU.');
+ const headers=new Headers();for(const line of lines){const colon=line.indexOf(':');if(colon>0)headers.append(line.slice(0,colon).trim(),line.slice(colon+1).trim());}
+ const framed=headers.has('content-length')||/chunked/i.test(headers.get('transfer-encoding')||'');
+ let body=bytes.slice(split+4);
+ if(/chunked/i.test(headers.get('transfer-encoding')||'')){
+  const chunks=[];let offset=0,total=0;
+  for(;;){let end=offset;while(end<body.length-1&&!(body[end]===13&&body[end+1]===10))end++;
+   if(end>=body.length-1)throw new RequestError('Resposta da SMU incompleta. Tente novamente.');
+   const line=new TextDecoder().decode(body.slice(offset,end)).split(';')[0].trim();
+   if(!/^[a-f0-9]+$/i.test(line))throw new RequestError('Resposta da SMU com tamanho inválido.');
+   const size=parseInt(line,16);offset=end+2;if(size===0)break;
+   if(size>3000000||offset+size+2>body.length||body[offset+size]!==13||body[offset+size+1]!==10)throw new RequestError('Resposta da SMU incompleta. Tente novamente.');
+   chunks.push(body.slice(offset,offset+size));total+=size;offset+=size+2;
+  }
+  body=new Uint8Array(total);let pos=0;for(const chunk of chunks){body.set(chunk,pos);pos+=chunk.length;}headers.delete('transfer-encoding');headers.delete('content-length');
+ }else if(headers.has('content-length')){
+  const n=Number(headers.get('content-length'));if(!Number.isSafeInteger(n)||n<0||body.length<n)throw new RequestError('A SMU encerrou a resposta antes de concluí-la. Tente novamente.');body=body.slice(0,n);
+ }
+ return {status,headers,bytes:body,framed};
+}
+export async function legacyPortalFetch(url,options={}){
+ if(new URL(url).hostname!=='consultasmu.rio.gov.br')return fetch(url,options);
+ const target=new URL(officialURL(url,'smu')),body=typeof options.body==='string'?options.body:'';
+ const headers={'Host':target.hostname,'User-Agent':'Mozilla/5.0 ProcessosArchiplus/1.0','Accept':'text/html,image/*;q=0.9,*/*;q=0.8',...options.headers,'Accept-Encoding':'identity','Connection':'close',...(body?{'Content-Length':String(new TextEncoder().encode(body).length)}:{})};
+ for(const value of Object.values(headers))if(/[\r\n]/.test(String(value)))throw new RequestError('Cabeçalho de consulta inválido.');
+ const request=(options.method||'GET')+' '+target.pathname+target.search+' HTTP/1.1\r\n'+Object.entries(headers).map(([k,v])=>k+': '+v).join('\r\n')+'\r\n\r\n'+body;
+ let connection,expired=false;const stop=()=>{expired=true;try{connection?.close();}catch{}};
+ const timer=setTimeout(stop,25000);options.signal?.addEventListener('abort',stop,{once:true});
+ try{
+  if(options.signal?.aborted)throw new RequestError('Consulta cancelada.');
+  connection=await Deno.connectTls({hostname:target.hostname,port:443});
+  if(expired){connection.close();throw new RequestError('A SMU demorou a responder.');}
+  const out=new TextEncoder().encode(request);let sent=0;while(sent<out.length)sent+=await connection.write(out.subarray(sent));
+  const parts=[];let total=0,closeError=null;
+  for(;;){const buffer=new Uint8Array(32768);let n;try{n=await connection.read(buffer);}catch(error){closeError=error;break;}if(n===null)break;total+=n;if(total>3100000)throw new RequestError('Resposta da SMU grande demais.');parts.push(buffer.slice(0,n));}
+  const all=new Uint8Array(total);let offset=0;for(const part of parts){all.set(part,offset);offset+=part.length;}
+  const raw=parseLegacyHTTP(all);
+  // A missing TLS close_notify is tolerated only after a fully framed HTTP
+  // response. Certificate validation remains enabled; partial bodies fail closed.
+  if(closeError&&(!String(closeError.message).includes('without sending TLS close_notify')||(!raw.framed&&!(raw.status>=300&&raw.status<400))))throw new RequestError('A SMU encerrou a resposta antes de concluí-la. Tente novamente.');
+  let bytes=raw.bytes;
+  const encoding=raw.headers.get('content-encoding')?.toLowerCase();
+  if(encoding==='gzip'||encoding==='deflate'){bytes=await readBytes(new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream(encoding))));raw.headers.delete('content-encoding');raw.headers.delete('content-length');}
+  return new Response([204,304].includes(raw.status)?null:bytes,{status:raw.status,headers:raw.headers});
+ }finally{clearTimeout(timer);options.signal?.removeEventListener('abort',stop);try{connection?.close();}catch{}}
+}
+
+
 const entities={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:' ',aacute:'á',eacute:'é',iacute:'í',oacute:'ó',uacute:'ú',atilde:'ã',otilde:'õ',ccedil:'ç',ordm:'º'};
 export const clean=s=>s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<[^>]+>/g,' ').replace(/&(#x[\da-f]+|#\d+|\w+);/gi,(m,k)=>k[0]==='#'?String.fromCodePoint(k[1]==='x'?parseInt(k.slice(2),16):Number(k.slice(1))):(entities[k.toLowerCase()]?(k[0]===k[0].toUpperCase()?entities[k.toLowerCase()].toUpperCase():entities[k.toLowerCase()]):m)).replace(/\s+/g,' ').trim();
 const table=(html,id)=>html.match(new RegExp('<table\\b[^>]*id="'+id+'"[^>]*>([\\s\\S]*?)</table>','i'))?.[1];
@@ -88,7 +141,7 @@ const unb64=s=>Uint8Array.from(atob(s),x=>x.charCodeAt(0));
 async function sessionKey(secret){return crypto.subtle.importKey('raw',await crypto.subtle.digest('SHA-256',utf8.encode(secret)),'AES-GCM',false,['encrypt','decrypt']);}
 async function seal(value,secret){const iv=crypto.getRandomValues(new Uint8Array(12));const body=await crypto.subtle.encrypt({name:'AES-GCM',iv},await sessionKey(secret),utf8.encode(JSON.stringify(value)));return b64(iv)+'.'+b64(new Uint8Array(body));}
 async function unseal(value,secret){const [iv,body]=value.split('.');return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(iv)},await sessionKey(secret),unb64(body))));}
-export function createHandler(env,transport=fetch){
+export function createHandler(env,transport=fetch,portalTransport=transport){
  const base=env.get('SUPABASE_URL'),anon=env.get('SUPABASE_ANON_KEY'),service=env.get('SUPABASE_SERVICE_ROLE_KEY');
  return async request=>{
  const origin=request.headers.get('origin')||'';
@@ -126,7 +179,7 @@ export function createHandler(env,transport=fetch){
    let current=officialURL(url,source),opts=options;const deadline=Date.now()+35000;
    for(let hop=0;hop<4;hop++){
     const cookie=[...jar].map(([k,v])=>k+'='+v).join('; ');
-    const res=await transport(current,{...opts,redirect:'manual',headers:{...(opts.headers||{}),...(cookie?{Cookie:cookie}:{}),'Cache-Control':'no-cache, no-store',Pragma:'no-cache'},signal:AbortSignal.timeout(Math.max(1,Math.min(25000,deadline-Date.now())))});
+    const res=await portalTransport(current,{...opts,redirect:'manual',headers:{...(opts.headers||{}),...(cookie?{Cookie:cookie}:{}),'Cache-Control':'no-cache, no-store',Pragma:'no-cache'},signal:AbortSignal.timeout(Math.max(1,Math.min(25000,deadline-Date.now())))});
     for(const line of res.headers.getSetCookie?.()||[]){const pair=line.split(';')[0],i=pair.indexOf('=');if(i>0)jar.set(pair.slice(0,i),pair.slice(i+1));}
     if(res.status>=300&&res.status<400){const location=res.headers.get('location');if(!location)throw new RequestError('Redirecionamento inválido do portal.');current=officialURL(new URL(location,current).href,source);opts={};await res.body?.cancel();continue;}
     if(!res.ok)throw new RequestError('O portal '+source.toUpperCase()+' retornou HTTP '+res.status+'.');
@@ -182,4 +235,4 @@ export function createHandler(env,transport=fetch){
  }
  };
 }
-if(typeof Deno!=='undefined')Deno.serve(createHandler(Deno.env));
+if(typeof Deno!=='undefined')Deno.serve(createHandler(Deno.env,fetch,legacyPortalFetch));

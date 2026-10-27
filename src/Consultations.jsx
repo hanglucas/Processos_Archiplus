@@ -21,10 +21,10 @@ export function ConsultationDialog({workspace,processes,onClose,onChanged}){
   const tasks=[...sei.map(p=>({p,source:'sei'})),...smu.map(p=>({p,source:'smu'}))];
   let cursor=0,success=0,failed=0;
   async function worker(){for(;;){const task=tasks[cursor++];if(!task)break;const {p,source}=task,key=p.id+':'+source;if(done.current.has(key))continue;patch(key,{loading:true,error:''});try{const response=await invokeConsultation(workspace,p.id,source==='sei'?'sei':'smu-start');if(source==='sei'){done.current.add(key);success++;patch(key,{loading:false,done:true,result:response.result});}else patch(key,{loading:false,challenge:response,code:''});}catch(e){failed++;patch(key,{loading:false,error:e.message});}}}
-  try{await Promise.all([worker(),worker()]);if(success)await onChanged();setSummary(success+' consulta(s) SEI salva(s).'+(smu.length?' Preencha os códigos da SMU abaixo.':'')+(failed?' '+failed+' consulta(s) com erro; veja os detalhes.':''));}
+  try{await Promise.all([worker(),worker()]);if(success)await onChanged();setSummary((sei.length?success+' consulta(s) SEI salva(s).':'')+(smu.length?' Preencha os códigos da SMU abaixo.':'')+(failed?' '+failed+' consulta(s) com erro; veja os detalhes.':''));}
   finally{lock.current=false;setBusy(false);}
  }
- async function refresh(p){const key=p.id+':smu';patch(key,{loading:true,error:'',challenge:null,code:''});try{patch(key,{loading:false,challenge:await invokeConsultation(workspace,p.id,'smu-start')});}catch(e){patch(key,{loading:false,error:e.message});}}
+ async function refresh(p){setSummary('Carregando nova validação da SMU…');const key=p.id+':smu';patch(key,{loading:true,error:'',challenge:null,code:''});try{patch(key,{loading:false,challenge:await invokeConsultation(workspace,p.id,'smu-start')});setSummary('Preencha o código da SMU abaixo.');}catch(e){patch(key,{loading:false,error:e.message});}}
  async function submit(e){
   e.preventDefault();if(lock.current)return;lock.current=true;setBusy(true);let success=0,failed=0;
   try{for(const p of smu){const key=p.id+':smu',job=jobs[key];if(done.current.has(key)||!job?.challenge||!job.code?.trim())continue;

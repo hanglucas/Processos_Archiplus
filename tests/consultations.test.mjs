@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 const code=await readFile(new URL('../supabase/functions/consult-process/index.ts',import.meta.url),'utf8');
-const {createHandler,officialURL,parseSEI,parseSmuResult}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+const {createHandler,officialURL,parseSEI,parseSmuResult,parseLegacyHTTP,legacyPortalFetch}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
 const W='10000000-0000-0000-0000-000000000001',U='20000000-0000-0000-0000-000000000001';
 const env={get:n=>({SUPABASE_URL:'https://db.example',SUPABASE_ANON_KEY:'public-test',SUPABASE_SERVICE_ROLE_KEY:'private-test-only'})[n]};
 const p={id:'p1',title:'Fixture',number:'000230.000001/2026-00',source:'sei',group:'Grupo',lifecycle:'active',url:'https://prefeitura.sei.rio/sei/modulos/pesquisa/md_pesq_processo_exibir.php?fixture'};
@@ -51,5 +51,30 @@ test('SMU preserva sessão cifrada entre invocações e consome CAPTCHA uma vez'
  const submit=await call({action:'smu-submit',token:challenge.token,code:'USERINPUT'});assert.equal(submit.status,200);assert.equal((await submit.json()).result.lastUnit,'B');assert.equal(state.sessions.size,0);assert.equal(state.saved.length,1);
  assert.equal((await call({action:'smu-submit',token:challenge.token,code:'USERINPUT'})).status,400);
  assert.equal(state.saved.length,1);
+});
+
+
+test('Resposta HTTP legada exige corpo completo e decodifica blocos',()=>{
+ const encode=s=>new TextEncoder().encode(s);
+ assert.equal(new TextDecoder().decode(parseLegacyHTTP(encode('HTTP/1.0 200 OK\r\nContent-Length: 5\r\nSet-Cookie: A=1\r\nSet-Cookie: B=2\r\n\r\nhello')).bytes),'hello');
+ assert.equal(new TextDecoder().decode(parseLegacyHTTP(encode('HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n')).bytes),'hello');
+ assert.throws(()=>parseLegacyHTTP(encode('HTTP/1.0 200 OK\r\nContent-Length: 10\r\n\r\nshort')));
+ assert.throws(()=>parseLegacyHTTP(encode('HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\nshort')));
+});
+
+
+test('TLS sem close_notify só é aceito com resposta HTTP completa',async()=>{
+ const previous=globalThis.Deno;
+ let response='HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello';
+ let tlsOptions;
+ globalThis.Deno={connectTls:async options=>{tlsOptions=options;let sent=false;return {write:async bytes=>bytes.length,read:async buffer=>{if(sent)throw Error('peer closed connection without sending TLS close_notify');sent=true;const bytes=new TextEncoder().encode(response);buffer.set(bytes);return bytes.length;},close(){}};}};
+ try{
+  assert.equal(await (await legacyPortalFetch('https://consultasmu.rio.gov.br/test')).text(),'hello');
+  assert.deepEqual(tlsOptions,{hostname:'consultasmu.rio.gov.br',port:443});
+  response='HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort';
+  await assert.rejects(()=>legacyPortalFetch('https://consultasmu.rio.gov.br/test'));
+  response='HTTP/1.1 200 OK\r\n\r\nunframed';
+  await assert.rejects(()=>legacyPortalFetch('https://consultasmu.rio.gov.br/test'));
+ }finally{if(previous===undefined)delete globalThis.Deno;else globalThis.Deno=previous;}
 });
 
