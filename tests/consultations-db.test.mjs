@@ -10,11 +10,12 @@ test('Sessões SMU privadas e repetição limitada por usuário/processo',async(
  const as=async id=>db.exec("reset role;set role authenticated;select set_config('request.jwt.claim.sub','"+id+"',false)");
  await as(a);const w=(await db.query("select public.create_workspace('Fixture') as id")).rows[0].id;
  await db.query('select public.save_process($1,$2,null)',[w,JSON.stringify({id:'p',title:'Fixture',number:'1234567890',group:'Grupo',source:'smu',lifecycle:'active'})]);
- await db.query("select public.reserve_consultation($1,'p')",[w]);
- await assert.rejects(()=>db.query("select public.reserve_consultation($1,'p')",[w]),/Aguarde/);
+ await db.query("select public.reserve_consultation($1,'p','sei')",[w]);
+ await db.query("select public.reserve_consultation($1,\'p\',\'smu\')",[w]);
+ await assert.rejects(()=>db.query("select public.reserve_consultation($1,'p','sei')",[w]),/Aguarde/);
  await assert.rejects(()=>db.query('select * from public.consultation_sessions'),/permission denied/);
  await assert.rejects(()=>db.query('select * from public.consultation_limits'),/permission denied/);
- await as(b);await assert.rejects(()=>db.query("select public.reserve_consultation($1,'p')",[w]),/autorizada/);
- await db.exec('reset role;set role anon');await assert.rejects(()=>db.query("select public.reserve_consultation($1,'p')",[w]),/permission denied/);
+ await as(b);await assert.rejects(()=>db.query("select public.reserve_consultation($1,'p','sei')",[w]),/autorizada/);
+ await db.exec('reset role;set role anon');await assert.rejects(()=>db.query("select public.reserve_consultation($1,'p','sei')",[w]),/permission denied/);
  await db.close();
 });

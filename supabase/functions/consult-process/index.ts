@@ -121,7 +121,7 @@ export function createHandler(env,transport=fetch){
   const p={...row.data,id};
   if(p.lifecycle!=='active')throw new RequestError('Reabra o processo antes de consultar.');
   if(action==='sei'&&!['sei','both'].includes(p.source)||action.startsWith('smu')&&!['smu','both'].includes(p.source))throw new RequestError('Esta consulta não se aplica ao processo.');
-  if(action!=='smu-submit')await api('rpc/reserve_consultation',{method:'POST',body:JSON.stringify({w:workspace,pid:id})});
+  if(action!=='smu-submit')await api('rpc/reserve_consultation',{method:'POST',body:JSON.stringify({w:workspace,pid:id,portal_name:action==='sei'?'sei':'smu'})});
   const external=async(url,source,options={},jar=new Map())=>{
    let current=officialURL(url,source),opts=options;const deadline=Date.now()+35000;
    for(let hop=0;hop<4;hop++){
