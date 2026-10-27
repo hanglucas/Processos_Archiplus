@@ -1,5 +1,16 @@
 # Processos Archiplus · GitHub Pages + Supabase
 
+Site publicado: https://hanglucas.github.io/Processos_Archiplus/
+
+## Consultas rápidas
+
+O botão **Consultar** em cada processo inicia a consulta imediatamente. **Consultar todos** usa os processos ativos; ao escolher um grupo, o botão consulta apenas o grupo. O SEI é lido automaticamente e mostra os últimos andamentos, documentos e histórico. Na SMU, o sistema preenche o número e apresenta o CAPTCHA para digitação pelo usuário. Os resultados são salvos na equipe e o histórico de gestão registra a alteração.
+
+Backend: Edge Function consult-process. Para uma nova instalação, aplique supabase/schema.sql, depois supabase/consultations.sql, e publique supabase/functions/consult-process/index.ts com o nome consult-process. A configuração verify_jwt = false desativa apenas o verificador legado da plataforma: a função exige um token de usuário validado por /auth/v1/user e verifica a associação à equipe antes de qualquer consulta. Os testes cobrem a rejeição de anônimos, leitores e não-membros. As variáveis de ambiente padrão SUPABASE_URL, SUPABASE_ANON_KEY e SUPABASE_SERVICE_ROLE_KEY são fornecidas pelo Supabase no servidor; nunca copie a chave administrativa para o frontend.
+
+Sessões SMU são cifradas no servidor, vinculadas ao usuário, equipe e processo, expiram em cinco minutos e são consumidas uma única vez. As tabelas auxiliares não são legíveis pelos usuários do aplicativo. Cada usuário precisa aguardar cinco segundos para repetir a consulta do mesmo processo. Erros dos portais não sobrescrevem resultados anteriores; alterações concorrentes de cadastro são detectadas pelo número da versão.
+
+
 Acesse um link, entre com e-mail/senha e gerencie a base privada da sua equipe. Não há instalação nos computadores dos usuários.
 
 ## Configuração inicial — pelo navegador
@@ -28,12 +39,12 @@ Recuperação de senha exige envio de e-mail pelo Supabase. Para usuários reais
 - Administrador, editor e leitor; proprietário protegido contra remoção/rebaixamento.
 - Cadastro, edição e exclusão de processos SEI, SMU e SEI+SMU; grupos, busca por número/nome/responsável e observações.
 - Aprovados, arquivados e reabertura; histórico de gestão com data/autor e registros anteriores preservados no banco.
-- Acompanhamento manual, acesso aos portais oficiais, backup JSON privado e atualização da lista a cada 45 segundos ou ao voltar à janela.
+- Consultas rápidas SEI/SMU, acompanhamento manual, acesso aos portais oficiais e backup JSON privado e atualização da lista a cada 45 segundos ou ao voltar à janela.
 - Importação inicial atômica em equipe vazia. O JSON separado contém os 32 cadastros recuperados e os resultados históricos SMU que estavam disponíveis.
 - Bloqueio de gravações sobre uma versão antiga, evitando sobrescrever a alteração de outra pessoa.
 - Interface responsiva com cores, logotipo, navegação, tabela e formulário recuperados da versão local V5.2.3.
 
-**Consultas automáticas SEI/SMU não estão implementadas neste pacote.** O Pages serve somente arquivos estáticos. Esta versão abre os portais oficiais em outra aba; o CAPTCHA é resolvido diretamente na SMU. O acompanhamento pode ser anotado manualmente e fica salvo no Supabase. Uma futura consulta automática precisa de um backend específico e testes com os portais; não há endpoint fictício ou chave administrativa no frontend.
+A SMU exige que o usuário digite o CAPTCHA; o sistema não resolve nem contorna essa validação. Consultas podem falhar por indisponibilidade dos portais, mudanças nas páginas ou validações adicionais do SEI. Nessas situações, a interface informa o erro e mantém o último resultado salvo.
 
 O ZIP Firebase Web V1 citado na conversa anterior não estava disponível nesta sessão. A interface foi reaproveitada do ZIP V5.2.3 encontrado em Downloads; os 32 processos foram recuperados de `archiplus-restaurar-versao-completa-32-processos.zip`. Não foi possível comparar o resultado com o código do Web V1.
 

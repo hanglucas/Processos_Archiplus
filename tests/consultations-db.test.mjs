@@ -1,0 +1,20 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {PGlite} from '@electric-sql/pglite';
+test('Sessões SMU privadas e repetição limitada por usuário/processo',async()=>{
+ const db=new PGlite(),a='10000000-0000-0000-0000-000000000001',b='10000000-0000-0000-0000-000000000002';
+ await db.exec("create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key,email text);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;grant usage on schema auth to authenticated;insert into auth.users values('"+a+"','a@example.test'),('"+b+"','b@example.test');");
+ await db.exec(await readFile(new URL('../supabase/schema.sql',import.meta.url),'utf8'));
+ await db.exec(await readFile(new URL('../supabase/consultations.sql',import.meta.url),'utf8'));
+ const as=async id=>db.exec("reset role;set role authenticated;select set_config('request.jwt.claim.sub','"+id+"',false)");
+ await as(a);const w=(await db.query("select public.create_workspace('Fixture') as id")).rows[0].id;
+ await db.query('select public.save_process($1,$2,null)',[w,JSON.stringify({id:'p',title:'Fixture',number:'1234567890',group:'Grupo',source:'smu',lifecycle:'active'})]);
+ await db.query("select public.reserve_consultation($1,'p')",[w]);
+ await assert.rejects(()=>db.query("select public.reserve_consultation($1,'p')",[w]),/Aguarde/);
+ await assert.rejects(()=>db.query('select * from public.consultation_sessions'),/permission denied/);
+ await assert.rejects(()=>db.query('select * from public.consultation_limits'),/permission denied/);
+ await as(b);await assert.rejects(()=>db.query("select public.reserve_consultation($1,'p')",[w]),/autorizada/);
+ await db.exec('reset role;set role anon');await assert.rejects(()=>db.query("select public.reserve_consultation($1,'p')",[w]),/permission denied/);
+ await db.close();
+});

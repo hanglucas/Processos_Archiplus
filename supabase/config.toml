@@ -1,0 +1,2 @@
+[functions.consult-process]
+verify_jwt = false
